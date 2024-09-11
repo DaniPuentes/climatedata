@@ -1,0 +1,77 @@
+// 1. Definir la línea de transecto con los 5 puntos
+var Transecto = ee.Geometry.LineString([
+  [-75.27911731969856, 2.92324787833558],
+  [-75.50629522181242, 2.92324787833558],
+  [-75.57347312392628, 2.92324787833558],
+  [-75.72065102604014, 2.92324787833558],
+  [-75.86782892815401, 2.92324787833558]
+]); //Cambia las coordenadas estan son las del A. 
+
+// 2. Importar el dataset de TerraClimate y filtrar por fechas
+var terraclimate = ee.ImageCollection('IDAHO_EPSCOR/TERRACLIMATE')
+  .filter(ee.Filter.date('1971-01-01', '2023-12-31'))
+  .select('tmmx');  // Selecciona la banda de temperatura máxima
+
+// 3. Importar el dataset de elevación (NASADEM) con resolución de 30m
+var elevation = ee.Image('NASA/NASADEM_HGT/001').select('elevation');
+
+// 4. Función para extraer los valores de tmmx y elevación para cada punto
+function extractValuesForPoint(coord) {
+  var point = ee.Geometry.Point(coord);
+  
+  // Extraer la elevación para el punto
+  var elevationValue = elevation.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: point,
+    scale: 30,  // Resolución de 30 metros para NASADEM
+    maxPixels: 1e6
+  }).get('elevation');
+  
+  // Función interna para extraer el valor de tmmx de cada imagen
+  function extractTmmx(image) {
+    var date = image.date().format('YYYY-MM');
+    
+    // Reducir y ajustar el valor de tmmx
+    var tmmxValue = ee.Number(image.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: point,
+      scale: 4638.3,  // Resolución de 4638.3 metros para TerraClimate
+      maxPixels: 1e6
+    }).get('tmmx')).multiply(0.1);  // Ajuste de escala de 0.1 para convertir a grados Celsius
+    
+    // Retornar un objeto Feature con la fecha, tmmx, latitud, longitud y elevación
+    return ee.Feature(point, {
+      'fecha': date,
+      'tmmx_Celsius': tmmxValue,  // Temperatura máxima ajustada a grados Celsius
+      'latitud': coord[1],
+      'longitud': coord[0],
+      'elevacion': elevationValue
+    });
+  }
+  
+  // Aplicar la función para extraer tmmx a la colección de TerraClimate
+  return terraclimate.map(extractTmmx);
+}
+
+// 5. Crear una lista con las coordenadas del transecto y aplicar la función para cada punto
+var coords = Transecto_A.coordinates().getInfo();  // Obtener las coordenadas como una lista
+var featuresList = [];
+
+coords.forEach(function(coord) {
+  var featureCollection = extractValuesForPoint(coord);
+  featuresList.push(featureCollection);
+});
+
+// Aplanar la lista de FeatureCollections en una sola colección
+var allFeatures = ee.FeatureCollection(featuresList).flatten();
+
+
+print(allFeatures)
+
+// 6. Exportar la serie de tiempo como un archivo CSV
+Export.table.toDrive({
+  collection: allFeatures,
+  description: 'Tmmx_TS_Transecto',
+  fileFormat: 'CSV'
+});
+
